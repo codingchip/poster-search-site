@@ -1,0 +1,26 @@
+import { defineConfig, globalIgnores } from 'eslint/config';
+import eslint from '@eslint/js';
+import jsxA11y from 'eslint-plugin-jsx-a11y';
+import react from 'eslint-plugin-react';
+import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+const eslintConfig = defineConfig([
+  globalIgnores(['.next/**', '.vinext/**', '.wrangler/**', 'dist/**', 'out/**', 'build/**', 'next-env.d.ts']),
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  react.configs.flat.recommended,
+  react.configs.flat['jsx-runtime'],
+  jsxA11y.flatConfigs.recommended,
+  reactHooks.configs.flat.recommended,
+  {
+    files: ['**/*.{js,mjs,ts,tsx}'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+    settings: { react: { version: 'detect' } },
+  },
+]);
+
+export default eslintConfig;
