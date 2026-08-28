@@ -1,6 +1,11 @@
 import type OpenSeadragonTypes from 'openseadragon';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { getNameSourceBounds, projectNamePart } from '../src/name-coordinates.mjs';
+import {
+  captureViewerView, createOpenRetryController, initialViewerLoadState, shouldKeepViewerView,
+  TILE_RETRY_OPTIONS, updateViewerLoadState, viewerLoadSummary,
+  type OpenRetryController, type ViewerLoadEvent, type ViewerViewSnapshot,
+} from '../src/viewer-recovery.mjs';
 
 type NamePart = [x: number, y: number, width: number, height: number];
 type NameRecord = [name: string, sourceIndex: number, parts: NamePart[]];
@@ -87,6 +92,11 @@ export default function NameFinder() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showResults, setShowResults] = useState(false);
   const [viewerReady, setViewerReady] = useState(false);
+  const [viewerGeneration, setViewerGeneration] = useState(0);
+  const [viewerLoad, setViewerLoad] = useState(initialViewerLoadState);
+  const [retryBusy, setRetryBusy] = useState(false);
+  const retryCooldown = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewToRestore = useRef<ViewerViewSnapshot | null>(null);
   const [loadError, setLoadError] = useState('');
   const deferredQuery = useDeferredValue(query.trim());
 
@@ -116,8 +126,14 @@ export default function NameFinder() {
     if (!config || !viewerElement.current) return;
     let cancelled = false;
     let instance: OpenSeadragonTypes.Viewer | null = null;
+    let openRecovery: OpenRetryController | null = null;
+    const report = (event: ViewerLoadEvent) => {
+      if (!cancelled) setViewerLoad((current) => updateViewerLoadState(current, event));
+    };
+    const tileKey = (tile: OpenSeadragonTypes.Tile) => `${tile.level}/${tile.x}_${tile.y}`;
     void import('openseadragon').then(({ default: OpenSeadragon }) => {
       if (cancelled || !viewerElement.current) return;
+      report({ type: 'restart' });
       const tileSources = config.poster.mode === 'tiles' && config.poster.tileSourceUrl
         ? assetUrl(config.poster.tileSourceUrl)
         : {
@@ -127,9 +143,9 @@ export default function NameFinder() {
               : createPlaceholderPoster(),
           };
 
-      instance = OpenSeadragon({
+      const activeViewer = OpenSeadragon({
         element: viewerElement.current,
-        tileSources,
+        ...TILE_RETRY_OPTIONS,
         showNavigationControl: false,
         animationTime: 0.65,
         blendTime: 0.1,
@@ -151,16 +167,48 @@ export default function NameFinder() {
         },
       });
 
-      viewer.current = instance;
-      instance.addHandler('open', () => setViewerReady(true));
-    }).catch(() => setLoadError('海报查看器加载失败'));
+      instance = activeViewer;
+      viewer.current = activeViewer;
+      openRecovery = createOpenRetryController({
+        reopen: () => activeViewer.open({ tileSource: tileSources }),
+        onFailure: (retry, attempt) => report({ type: 'open-failed', retry, attempt }),
+      });
+      activeViewer.addHandler('open', () => {
+        if (cancelled) return;
+        openRecovery?.succeeded();
+        report({ type: 'opened' });
+        if (viewToRestore.current) activeViewer.viewport.fitBounds(viewToRestore.current.bounds, true);
+        setViewerReady(true);
+      });
+      activeViewer.addHandler('open-failed', () => {
+        if (cancelled) return;
+        setViewerReady(false);
+        openRecovery?.failed();
+      });
+      activeViewer.addHandler('tile-load-failed', (event) => {
+        report({ type: 'tile-failed', key: tileKey(event.tile), attempts: event.tries });
+      });
+      activeViewer.addHandler('tile-loaded', (event) => {
+        report({ type: 'tile-loaded', key: tileKey(event.tile) });
+      });
+      activeViewer.addHandler('fully-loaded-change', (event) => {
+        report({ type: 'fully-loaded', loaded: event.fullyLoaded });
+      });
+      // Register handlers before opening, including failures while reading the DZI.
+      activeViewer.open({ tileSource: tileSources });
+    }).catch(() => report({ type: 'open-failed', retry: false, attempt: 0 }));
     return () => {
       cancelled = true;
+      openRecovery?.dispose();
       setViewerReady(false);
       instance?.destroy();
       viewer.current = null;
     };
-  }, [config]);
+  }, [config, viewerGeneration]);
+
+  useEffect(() => () => {
+    if (retryCooldown.current) clearTimeout(retryCooldown.current);
+  }, []);
 
   const matches = useMemo(() => {
     if (!nameIndex || !deferredQuery) return [];
@@ -179,7 +227,7 @@ export default function NameFinder() {
     return getNameSourceBounds(nameIndex.records, config.nameLayerCoordinateMode);
   }, [config, nameIndex]);
 
-  const revealRecord = useCallback((record: NameRecord | null) => {
+  const revealRecord = useCallback((record: NameRecord | null, focus = true) => {
     const instance = viewer.current;
     if (!record || !config || !sourceBounds || !instance || instance.world.getItemCount() === 0) return;
     const image = instance.world.getItemAt(0);
@@ -224,18 +272,22 @@ export default function NameFinder() {
 
     const padX = Math.max((right - left) * 2.8, config.poster.width * 0.008);
     const padY = Math.max((bottom - top) * 7, config.poster.height * 0.025);
-    const focus = image.imageToViewportRectangle(
+    const focusBounds = image.imageToViewportRectangle(
       Math.max(0, left - padX) * scaleX,
       Math.max(0, top - padY) * scaleY,
       Math.min(config.poster.width, right - left + padX * 2) * scaleX,
       Math.min(config.poster.height, bottom - top + padY * 2) * scaleY,
     );
-    instance.viewport.fitBoundsWithConstraints(focus, false);
+    if (focus) instance.viewport.fitBoundsWithConstraints(focusBounds, false);
   }, [config, sourceBounds]);
 
   useEffect(() => {
     if (!viewerReady) return;
-    const frame = requestAnimationFrame(() => revealRecord(selected));
+    const frame = requestAnimationFrame(() => {
+      const keepView = shouldKeepViewerView(viewToRestore.current, selected?.[1] ?? null);
+      revealRecord(selected, !keepView);
+      viewToRestore.current = null;
+    });
     return () => cancelAnimationFrame(frame);
   }, [selected, revealRecord, viewerReady]);
 
@@ -247,6 +299,16 @@ export default function NameFinder() {
   };
 
   const resetView = () => viewer.current?.viewport.goHome(false);
+  const retryViewer = () => {
+    if (!config || retryBusy) return;
+    // Recreate rather than redraw: failed tiles can remain marked as unavailable.
+    viewToRestore.current = captureViewerView(viewer.current, selected?.[1] ?? null) ?? viewToRestore.current;
+    setViewerReady(false);
+    setViewerLoad(initialViewerLoadState());
+    setViewerGeneration((generation) => generation + 1);
+    setRetryBusy(true);
+    retryCooldown.current = setTimeout(() => setRetryBusy(false), 1500);
+  };
   const moveSelection = (step: number) => {
     if (!matches.length) return;
     setSelectedIndex((current) => (current + step + matches.length) % matches.length);
@@ -257,6 +319,7 @@ export default function NameFinder() {
     : nameIndex
       ? `${nameIndex.nameCount.toLocaleString('zh-CN')} 个姓名可查询`
       : '正在载入姓名索引…';
+  const viewerStatus = viewerLoadSummary(viewerLoad);
 
   return (
     <main className="finder-page">
@@ -321,9 +384,19 @@ export default function NameFinder() {
           </div>
         </div>
 
+        <div className={`viewer-status ${viewerStatus.tone}`}>
+          <span role="status" aria-live="polite">{!config ? loadError || '正在读取海报配置…' : viewerStatus.text}</span>
+          <button
+            type="button"
+            onClick={retryViewer}
+            disabled={!config || retryBusy}
+            aria-label="重新加载海报查看器，保留当前缩放位置和姓名选择"
+          >{retryBusy ? '重试中…' : '重试高清'}</button>
+        </div>
+
         <div className="viewer-wrap">
           <div ref={viewerElement} className="poster-viewer" />
-          {!viewerReady && <div className="viewer-loading">正在准备海报查看器…</div>}
+          {!viewerReady && <div className="viewer-loading">{!config ? loadError || '正在读取海报配置…' : viewerStatus.text}</div>}
           <div className="gesture-tip">单指拖动 · 双指缩放 · 双击放大</div>
         </div>
 
