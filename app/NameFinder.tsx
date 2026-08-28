@@ -340,7 +340,7 @@ export default function NameFinder() {
 
       <footer className="page-footer">
         <span>姓名查询仅用于新生海报定位</span>
-        <span>正式上线前请确认姓名信息公开范围</span>
+        <span>高清图片较大加载较慢 会优先加载缩略图</span>
       </footer>
     </main>
   );
