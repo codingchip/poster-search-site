@@ -2,16 +2,17 @@
   "version": 1,
   "title": "2026年本科新生姓名海报",
   "poster": {
-    "mode": "placeholder",
+    "mode": "tiles",
     "imageUrl": "",
-    "tileSourceUrl": "",
-    "width": 3600,
-    "height": 1200
+    "tileSourceUrl": "poster/2026.dzi",
+    "width": 17717,
+    "height": 6201
   },
+  "nameLayerCoordinateMode": "content",
   "nameLayerRegion": {
-    "x": 0,
-    "y": 0,
-    "width": 3600,
-    "height": 1200
+    "x": 1662,
+    "y": 1567,
+    "width": 14395,
+    "height": 2487
   }
 }

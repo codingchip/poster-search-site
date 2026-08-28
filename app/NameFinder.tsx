@@ -1,5 +1,6 @@
 import type OpenSeadragonTypes from 'openseadragon';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { getNameSourceBounds, projectNamePart } from '../src/name-coordinates.mjs';
 
 type NamePart = [x: number, y: number, width: number, height: number];
 type NameRecord = [name: string, sourceIndex: number, parts: NamePart[]];
@@ -23,6 +24,7 @@ type PosterConfig = {
     width: number;
     height: number;
   };
+  nameLayerCoordinateMode?: 'canvas' | 'content';
   nameLayerRegion: {
     x: number;
     y: number;
@@ -91,7 +93,7 @@ export default function NameFinder() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch(assetUrl('config/poster.json')).then((response) => {
+      fetch(assetUrl('config/poster.json'), { cache: 'no-store' }).then((response) => {
         if (!response.ok) throw new Error('海报配置读取失败');
         return response.json() as Promise<PosterConfig>;
       }),
@@ -101,6 +103,7 @@ export default function NameFinder() {
       }),
     ]).then(([nextConfig, nextIndex]) => {
       if (cancelled) return;
+      getNameSourceBounds(nextIndex.records, nextConfig.nameLayerCoordinateMode);
       setConfig(nextConfig);
       setNameIndex(nextIndex);
     }).catch((error: unknown) => {
@@ -171,9 +174,14 @@ export default function NameFinder() {
 
   const selected = matches[Math.min(selectedIndex, Math.max(0, matches.length - 1))] ?? null;
 
+  const sourceBounds = useMemo(() => {
+    if (!config || !nameIndex) return null;
+    return getNameSourceBounds(nameIndex.records, config.nameLayerCoordinateMode);
+  }, [config, nameIndex]);
+
   const revealRecord = useCallback((record: NameRecord | null) => {
     const instance = viewer.current;
-    if (!record || !config || !instance || instance.world.getItemCount() === 0) return;
+    if (!record || !config || !sourceBounds || !instance || instance.world.getItemCount() === 0) return;
     const image = instance.world.getItemAt(0);
     const contentSize = image.getContentSize();
     const region = config.nameLayerRegion;
@@ -185,11 +193,12 @@ export default function NameFinder() {
     let bottom = Number.NEGATIVE_INFINITY;
 
     instance.clearOverlays();
-    record[2].forEach(([x, y, width, height], partIndex) => {
-      const posterX = region.x + x * region.width;
-      const posterY = region.y + y * region.height;
-      const posterWidth = width * region.width;
-      const posterHeight = height * region.height;
+    record[2].forEach((part, partIndex) => {
+      const mapped = projectNamePart(part, region, sourceBounds);
+      const posterX = mapped.x;
+      const posterY = mapped.y;
+      const posterWidth = mapped.width;
+      const posterHeight = mapped.height;
       left = Math.min(left, posterX);
       top = Math.min(top, posterY);
       right = Math.max(right, posterX + posterWidth);
@@ -222,7 +231,7 @@ export default function NameFinder() {
       Math.min(config.poster.height, bottom - top + padY * 2) * scaleY,
     );
     instance.viewport.fitBoundsWithConstraints(focus, false);
-  }, [config]);
+  }, [config, sourceBounds]);
 
   useEffect(() => {
     if (!viewerReady) return;

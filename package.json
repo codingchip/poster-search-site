@@ -9,9 +9,10 @@
     "dev": "vite",
     "build": "tsc --project tsconfig.app.json && vite build",
     "preview": "vite preview",
-    "test": "npm run build && node --test tests/static-build.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist",
-    "data:build": "node scripts/build-name-index.mjs"
+    "data:build": "node scripts/build-name-index.mjs",
+    "poster:build": "node scripts/build-poster-tiles.mjs"
   },
   "dependencies": {
     "openseadragon": "6.1.0",
@@ -29,6 +30,7 @@
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
+    "sharp": "0.35.4",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
     "vite": "8.0.13"
